@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>diss_quack Array Game</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    background-color: #f0f0f0;
+    margin: 20px;
+  }
+  h1 {
+    color: #333333;
+  }
+  .box {
+    border: 2px solid black;
+    padding: 15px;
+    margin-bottom: 15px;
+    background-color: white;
+  }
+  input[type=number] {
+    width: 45px;
+    text-align: center;
+    font-size: 16px;
+    margin: 3px;
+  }
+  button {
+    font-size: 15px;
+    padding: 6px 12px;
+    margin: 5px 3px;
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+  #arrArea {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .arrBox {
+    display: inline-block;
+    width: 55px;
+    height: 55px;
+    line-height: 55px;
+    text-align: center;
+    border: 2px solid #444;
+    margin: 4px;
+    font-size: 18px;
+    font-weight: bold;
+    background-color: #e8e8e8;
+    cursor: pointer;
+    position: relative;
+    transition: background-color 0.1s ease-in, transform 0.5s ease;
+  }
+  .arrBoxSelected {
+    background-color: #66aaff;
+  }
+  .hlEven {
+    background-color: #ff8080;
+  }
+  .hlOdd {
+    background-color: #ffe066;
+  }
+  .hlInc {
+    background-color: #7be07b;
+  }
+  .arrLabel {
+    display: inline-block;
+    width: 55px;
+    text-align: center;
+    margin: 4px;
+    font-size: 12px;
+    color: #666;
+  }
+  #log {
+    height: 180px;
+    overflow-y: scroll;
+    background-color: #fafafa;
+    border: 1px solid #999;
+    padding: 8px;
+    font-family: monospace;
+    font-size: 13px;
+  }
+  #result {
+    font-size: 26px;
+    font-weight: bold;
+    color: #004400;
+    line-height: 1.6;
+  }
+  .hidden {
+    display: none;
+  }
+  .totalCounter {
+    font-size: 22px;
+    font-weight: bold;
+    color: #b30000;
+  }
+</style>
+</head>
+<body>
+
+<h1>diss_quack Array Game</h1>
+<p>Based on Codeforces 2246D. Pick 2 to 8 numbers, then play a round as Alice and a round as Bob against a hardcoded optimal AI opponent.</p>
+
+<!-- STEP 1: choose numbers -->
+<div class="box" id="setupBox">
+  <h3>Pick 2-8 numbers (1-100) — clear boxes from the end for fewer than 8</h3>
+  <div id="inputsRow"></div>
+  <button onclick="randomize()">🎲 Randomize (1-20)</button>
+  <br>
+  <button onclick="startPlay()">▶ Play</button>
+</div>
+
+<!-- STEP 2: game area -->
+<div class="box hidden" id="gameBox">
+  <h3 id="modeTitle"></h3>
+  <div id="arrArea">
+    <div id="arrRow"></div>
+    <button id="noChangeBtn" class="hidden" onclick="noChangeClick()">No changes</button>
+  </div>
+  <p id="turnInfo"></p>
+  <div id="controls"></div>
+  <p>Total moves so far: <span class="totalCounter" id="moveCounter">0</span></p>
+  <div id="log"></div>
+  <p id="result"></p>
+  <button onclick="resetAll()">⬅ Back to setup</button>
+</div>
+
+<script>
+let game = null;
+let originalNums = [];
+let results = {};
+
+const HL_STEP_MS = 200;   // pause between each red/yellow highlight step
+const INC_STEP_MS = 1000; // pause while a box is highlighted green for pregame increments
+const SWAP_MS = 500;      // duration of the Bob swap slide animation
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function randInRange(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function makeInputs() {
+  const row = document.getElementById('inputsRow');
+  row.innerHTML = '';
+  for (let i = 0; i < 8; i++) {
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.min = 1;
+    inp.max = 100;
+    inp.value = randInRange(1, 20);
+    inp.id = 'num' + i;
+    row.appendChild(inp);
+  }
+}
+makeInputs();
+
+function randomize() {
+  for (let i = 0; i < 8; i++) {
+    document.getElementById('num' + i).value = randInRange(1, 20);
+  }
+}
+
+function readNumbers() {
+  const nums = [];
+  for (let i = 0; i < 8; i++) {
+    const raw = document.getElementById('num' + i).value.trim();
+    if (raw === '') continue; // blank box -- skip this slot (fewer than 8 numbers)
+    const v = parseInt(raw, 10);
+    if (isNaN(v) || v < 1 || v > 100) {
+      alert('Please make sure every filled-in number is between 1 and 100.');
+      return null;
+    }
+    nums.push(v);
+  }
+  if (nums.length < 2) {
+    alert('Please enter at least 2 numbers.');
+    return null;
+  }
+  return nums;
+}
+
+function addLog(text) {
+  game.log.push(text);
+}
+
+// ---- direct DOM helpers used mid-animation, so CSS transitions actually fade ----
+function getBoxEls() {
+  return Array.from(document.querySelectorAll('#arrRow .arrBox'));
+}
+
+function setHighlight(idx, cls) {
+  const els = getBoxEls();
+  const el = els[idx];
+  if (!el) return;
+  el.classList.remove('hlEven', 'hlOdd', 'hlInc');
+  if (cls) el.classList.add(cls);
+}
+
+function clearAllHighlights() {
+  getBoxEls().forEach(el => el.classList.remove('hlEven', 'hlOdd', 'hlInc'));
+}
+
+function setBoxValue(idx, val) {
+  const els = getBoxEls();
+  if (els[idx]) els[idx].textContent = val;
+}
+
+// ---- Bob swap animation ("cup game" slide) ----
+async function animateSwap(i, j) {
+  if (i === j) return;
+  const els = getBoxEls();
+  const elI = els[i], elJ = els[j];
+  if (!elI || !elJ) return;
+  const style = getComputedStyle(elI);
+  const step = elI.offsetWidth + parseFloat(style.marginLeft) + parseFloat(style.marginRight);
+  const delta = (j - i) * step;
+  elI.style.zIndex = 5;
+  elJ.style.zIndex = 5;
+  elI.style.transform = 'translateX(' + delta + 'px)';
+  elJ.style.transform = 'translateX(' + (-delta) + 'px)';
+  await sleep(SWAP_MS);
+  const tmp = game.arr[i];
+  game.arr[i] = game.arr[j];
+  game.arr[j] = tmp;
+  renderGame();
+}
+
+// ---- forced Alice move, animated: scan from the front, red=even, yellow=odd ----
+async function forcedAliceMoveAnimated() {
+  if (game.arr.length === 0) return false;
+  let idx = 0;
+  while (idx < game.arr.length && game.arr[idx] % 2 === 0) {
+    setHighlight(idx, 'hlEven');
+    await sleep(HL_STEP_MS);
+    idx++;
+  }
+  const foundOdd = idx < game.arr.length;
+  if (foundOdd) {
+    setHighlight(idx, 'hlOdd');
+    await sleep(HL_STEP_MS);
+  }
+
+  if (foundOdd && idx === 0) {
+    // the very first box is odd -> subtract 1 from it
+    game.arr[0] -= 1;
+    game.aliceMoves++;
+    addLog('Alice: front value is odd -> decrement to ' + game.arr[0]);
+    setHighlight(0, null);
+    if (game.arr[0] === 0) {
+      game.arr.shift();
+      addLog('-> that element hit 0 and was removed');
+    }
+  } else {
+    // an odd box appeared later (or never) -> un-highlight it, then halve the red prefix
+    const L = foundOdd ? idx : game.arr.length;
+    if (foundOdd) {
+      setHighlight(idx, null);
+      await sleep(HL_STEP_MS);
+    }
+    for (let k = 0; k < L; k++) game.arr[k] = game.arr[k] / 2;
+    game.aliceMoves++;
+    addLog('Alice: front ' + L + ' value(s) all even -> halved them');
+    clearAllHighlights();
+  }
+  renderGame();
+  return true;
+}
+
+// ---- AI-Bob: keep position 2 odd as a permanent wall ----
+function computeAiBobSwap() {
+  if (game.arr.length < 2) return null;
+  if (game.arr[1] % 2 === 1) return null; // wall already up
+  let p = -1;
+  for (let i = 2; i < game.arr.length; i++) {
+    if (game.arr[i] % 2 === 1) { p = i; break; }
+  }
+  if (p === -1 && game.arr[0] % 2 === 1) p = 0;
+  if (p !== -1) return [1, p];
+  return null;
+}
+
+async function aiBobTurn() {
+  const swap = computeAiBobSwap();
+  if (swap) {
+    addLog('AI-Bob: swaps position ' + (swap[0] + 1) + ' and ' + (swap[1] + 1) + ' (odd number to position 2, blocking batch halving)');
+    await animateSwap(swap[0], swap[1]);
+  } else {
+    if (game.arr.length < 2) addLog('AI-Bob: nothing useful to swap');
+    else if (game.arr[1] % 2 === 1) addLog('AI-Bob: position 2 is already odd (wall is up) — passes');
+    else addLog('AI-Bob: no odd numbers anywhere — passes');
+    renderGame();
+    await sleep(HL_STEP_MS);
+  }
+}
+
+// ---- AI-Alice pregame increments: true optimal padding ----
+// arr1[v] = standalone cost to reduce a lone value v to 0
+// (decrement if odd, halve if even -- optimal with no sharing available).
+const ARR1_MAX = 4200;
+const arr1 = new Array(ARR1_MAX + 1);
+arr1[0] = 0;
+for (let v = 1; v <= ARR1_MAX; v++) {
+  arr1[v] = (v % 2 === 1) ? arr1[v - 1] + 1 : arr1[v / 2] + 1;
+}
+
+// For a candidate number k of synchronized free halving rounds (every element
+// padded to a multiple of 2^k), find the best possible per-element target and
+// the resulting true total cost, then take the best k overall. This is a
+// suffix-min sweep over "residual after k rounds" (see chat writeup for why
+// the naive per-element-only version is wrong -- e.g. [1780,1017]).
+function computeOptimalPregame(values) {
+  const n = values.length;
+  const K_MAX = 12;
+  let best = null;
+
+  for (let k = 0; k <= K_MAX; k++) {
+    const scale = 1 << k;
+    const Rmax = Math.min(ARR1_MAX, Math.ceil(ARR1_MAX / scale) + 4);
+    const h = new Array(Rmax + 2);
+    const bestR = new Array(Rmax + 2);
+    h[Rmax + 1] = Infinity;
+    bestR[Rmax + 1] = -1;
+    for (let r = Rmax; r >= 0; r--) {
+      const candidate = r * scale + arr1[r];
+      if (candidate <= h[r + 1]) {
+        h[r] = candidate;
+        bestR[r] = r;
+      } else {
+        h[r] = h[r + 1];
+        bestR[r] = bestR[r + 1];
+      }
+    }
+
+    let feasible = true;
+    let sumH = 0, sumX = 0;
+    const targets = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const c = Math.ceil(values[i] / scale);
+      if (c > Rmax) { feasible = false; break; }
+      const r = bestR[c];
+      targets[i] = r * scale;
+      sumH += h[c];
+      sumX += values[i];
+    }
+    if (!feasible) continue;
+
+    const total = k + sumH - sumX; // k synchronized turns + (padding + post-wall cost) per element
+    if (!best || total < best.total) {
+      best = { k, total, targets };
+    }
+  }
+  return best;
+}
+
+async function aiAlicePregame() {
+  const plan = computeOptimalPregame(game.arr.slice());
+  addLog('AI-Alice: optimal plan uses k=' + plan.k + ' synchronized round(s), projected total ' + plan.total + ' move(s)');
+  for (let idx = 0; idx < game.arr.length; idx++) {
+    setHighlight(idx, 'hlInc');
+    await sleep(INC_STEP_MS);
+    const target = plan.targets[idx];
+    const delta = target - game.arr[idx];
+    if (delta > 0) {
+      game.arr[idx] = target;
+      game.incrementMoves += delta;
+      setBoxValue(idx, game.arr[idx]);
+      document.getElementById('moveCounter').textContent = game.aliceMoves + game.incrementMoves;
+      addLog('AI-Alice: pads position ' + (idx + 1) + ' by +' + delta + ' -> ' + target);
+    }
+    setHighlight(idx, null);
+  }
+  game.phase = 'playing';
+  game.busy = false;
+  addLog('AI-Alice pregame done: ' + game.incrementMoves + ' increment(s) total');
+  renderGame();
+}
+
+// ---- round 1: you are Alice vs AI-Bob ----
+function startRound1() {
+  game = {
+    mode: 'alice',
+    arr: originalNums.slice(),
+    original: originalNums.slice(),
+    aliceMoves: 0,
+    incrementMoves: 0,
+    log: [],
+    phase: 'increment',
+    round: 1,
+    busy: false
+  };
+  document.getElementById('modeTitle').textContent = 'Round 1 of 2 — You are ALICE (AI plays Bob)';
+  document.getElementById('result').textContent = '';
+  addLog('Round 1 start: ' + originalNums.join(', '));
+  renderGame();
+}
+
+function incrementValue(idx) {
+  if (game.mode !== 'alice' || game.phase !== 'increment') return;
+  game.arr[idx] += 1;
+  game.incrementMoves += 1;
+  renderGame();
+}
+
+async function startRound1Simulation() {
+  game.phase = 'playing';
+  addLog('Pregame done: you added ' + game.incrementMoves + ' increment(s)');
+  renderGame();
+  await sleep(400);
+  while (game.arr.length > 0) {
+    await aiBobTurn();
+    if (game.arr.length === 0) break;
+    await forcedAliceMoveAnimated();
+  }
+  checkGameEnd();
+}
+
+// ---- round 2: you are Bob vs AI-Alice ----
+async function startRound2() {
+  game = {
+    mode: 'bob',
+    arr: originalNums.slice(),
+    original: originalNums.slice(),
+    aliceMoves: 0,
+    incrementMoves: 0,
+    log: [],
+    selected: null,
+    phase: 'ai-increment',
+    round: 2,
+    busy: true
+  };
+  document.getElementById('modeTitle').textContent = 'Round 2 of 2 — You are BOB (AI plays Alice)';
+  document.getElementById('result').textContent = '';
+  addLog('Round 2 start: ' + originalNums.join(', '));
+  renderGame();
+  await sleep(400);
+  await aiAlicePregame();
+}
+
+async function boxClick(idx) {
+  if (game.mode !== 'bob' || game.phase !== 'playing' || game.busy) return;
+  if (game.selected === null) {
+    game.selected = idx;
+    renderGame();
+    return;
+  }
+  if (game.selected === idx) {
+    game.selected = null;
+    renderGame();
+    return;
+  }
+  const i = game.selected, j = idx;
+  game.selected = null;
+  game.busy = true;
+  addLog('You (Bob): swap position ' + (i + 1) + ' and ' + (j + 1));
+  renderGame();
+  await animateSwap(i, j);
+  await forcedAliceMoveAnimated();
+  game.busy = false;
+  if (game.arr.length > 0) renderGame();
+  checkGameEnd();
+}
+
+async function noChangeClick() {
+  if (game.mode !== 'bob' || game.phase !== 'playing' || game.busy) return;
+  game.busy = true;
+  addLog('You (Bob): no changes this turn');
+  renderGame();
+  await forcedAliceMoveAnimated();
+  game.busy = false;
+  if (game.arr.length > 0) renderGame();
+  checkGameEnd();
+}
+
+function checkGameEnd() {
+  if (game.arr.length === 0 && game.phase !== 'done') {
+    game.phase = 'done';
+    const total = game.aliceMoves + game.incrementMoves;
+    if (game.round === 1) {
+      results.round1Total = total;
+      addLog('ROUND 1 OVER -- total moves: ' + total);
+      renderGame();
+      setTimeout(startRound2, 1500);
+    } else {
+      results.round2Total = total;
+      addLog('ROUND 2 OVER -- total moves: ' + total);
+      renderGame();
+      showFinalComparison();
+    }
+  }
+}
+
+function simulateFullAI(nums) {
+  const plan = computeOptimalPregame(nums);
+  let arr = plan.targets.slice();
+  let aliceMoves = 0;
+  function forced() {
+    if (arr.length === 0) return;
+    if (arr[0] % 2 === 1) {
+      arr[0] -= 1;
+      aliceMoves++;
+      if (arr[0] === 0) arr.shift();
+    } else {
+      let L = 0;
+      while (L < arr.length && arr[L] % 2 === 0) L++;
+      for (let k = 0; k < L; k++) arr[k] = arr[k] / 2;
+      aliceMoves++;
+    }
+  }
+  function aiBob() {
+    if (arr.length < 2) return;
+    if (arr[1] % 2 === 1) return;
+    let p = -1;
+    for (let i = 2; i < arr.length; i++) {
+      if (arr[i] % 2 === 1) { p = i; break; }
+    }
+    if (p === -1 && arr[0] % 2 === 1) p = 0;
+    if (p !== -1) {
+      const tmp = arr[1];
+      arr[1] = arr[p];
+      arr[p] = tmp;
+    }
+  }
+  while (arr.length > 0) {
+    aiBob();
+    forced();
+  }
+  const paddingCost = plan.targets.reduce((s, v, i) => s + (v - nums[i]), 0);
+  return aliceMoves + paddingCost;
+}
+
+function showFinalComparison() {
+  const r1 = results.round1Total, r2 = results.round2Total;
+  const baseline = simulateFullAI(originalNums);
+  document.getElementById('result').innerHTML =
+    'You vs AI: ' + r1 + ' moves<br>' +
+    'AI vs You: ' + r2 + ' moves<br>' +
+    'AI vs AI: ' + baseline + ' moves';
+}
+
+function startPlay() {
+  const nums = readNumbers();
+  if (!nums) return;
+  originalNums = nums.slice();
+  results = {};
+  document.getElementById('setupBox').classList.add('hidden');
+  document.getElementById('gameBox').classList.remove('hidden');
+  startRound1();
+}
+
+function renderGame() {
+  const arrRow = document.getElementById('arrRow');
+  arrRow.innerHTML = '';
+  game.arr.forEach((v, idx) => {
+    const box = document.createElement('div');
+    box.className = 'arrBox' + (game.selected === idx ? ' arrBoxSelected' : '');
+    box.textContent = v;
+    if (game.mode === 'bob' && game.phase === 'playing' && !game.busy) {
+      box.onclick = () => boxClick(idx);
+    } else if (game.mode === 'alice' && game.phase === 'increment') {
+      box.onclick = () => incrementValue(idx);
+    }
+    arrRow.appendChild(box);
+  });
+  if (game.arr.length === 0) {
+    arrRow.innerHTML = '<i>(array is empty)</i>';
+  }
+
+  const noChangeBtn = document.getElementById('noChangeBtn');
+  if (game.mode === 'bob' && game.phase === 'playing') {
+    noChangeBtn.classList.remove('hidden');
+    noChangeBtn.disabled = game.busy;
+  } else {
+    noChangeBtn.classList.add('hidden');
+  }
+
+  const controls = document.getElementById('controls');
+  controls.innerHTML = '';
+  const turnInfo = document.getElementById('turnInfo');
+
+  if (game.mode === 'bob') {
+    if (game.phase === 'ai-increment') {
+      turnInfo.textContent = 'AI-Alice is choosing pregame increments...';
+    } else if (game.phase === 'playing') {
+      turnInfo.textContent = game.busy
+        ? 'Resolving turn...'
+        : (game.selected === null
+          ? "Bob's turn: click a box to select it, or click 'No changes' to pass"
+          : 'Selected position ' + (game.selected + 1) + ' -- click another box to swap with it');
+    } else {
+      turnInfo.textContent = '';
+    }
+  } else {
+    if (game.phase === 'increment') {
+      turnInfo.textContent = 'Click any number to add +1 to it (costs 1 move each), then press Start.';
+      const startBtn = document.createElement('button');
+      startBtn.textContent = '▶ Start Simulation';
+      startBtn.onclick = startRound1Simulation;
+      controls.appendChild(startBtn);
+    } else if (game.phase === 'playing') {
+      turnInfo.textContent = 'Simulating... AI-Bob swaps, then your forced Alice move applies automatically.';
+    } else {
+      turnInfo.textContent = '';
+    }
+  }
+
+  document.getElementById('moveCounter').textContent = game.aliceMoves + game.incrementMoves;
+  document.getElementById('log').innerHTML = game.log.map(l => '&gt; ' + l).join('<br>');
+  document.getElementById('log').scrollTop = document.getElementById('log').scrollHeight;
+}
+
+function resetAll() {
+  game = null;
+  results = {};
+  document.getElementById('setupBox').classList.remove('hidden');
+  document.getElementById('gameBox').classList.add('hidden');
+  document.getElementById('result').textContent = '';
+}
+</script>
+
+</body>
+</html>
